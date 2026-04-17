@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ricepheus - Project Hours</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+        :root {
+            --bg: #0a0a0f;
+            --surface: #14141f;
+            --bar: #11111b;
+            --border: #1e1e2e;
+            --text: #cdd6f4;
+            --text-dim: #585b70;
+            --accent: #94e2d5;
+            --accent-dim: #94e2d518;
+            --overlay: #181825;
+            --mauve: #cba6f7;
+            --pink: #f38ba8;
+            --radius: 12px;
+            --mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--mono);
+            line-height: 1.5;
+            min-height: 100vh;
+            overflow-x: hidden;
+            padding-bottom: 2rem;
+        }
+
+        /* --- Powerline bar --- */
+        .bar {
+            display: flex;
+            align-items: stretch;
+            height: 32px;
+            background: var(--bg);
+            font-size: 13px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            margin-bottom: 2rem;
+        }
+
+        .pl-seg {
+            display: flex;
+            align-items: center;
+            padding: 0 8px;
+            white-space: nowrap;
+            position: relative;
+            font-weight: 500;
+        }
+
+        .pl-seg::after {
+            content: "";
+            position: absolute;
+            right: -16px;
+            top: 0;
+            width: 0;
+            height: 0;
+            border-top: 16px solid transparent;
+            border-bottom: 16px solid transparent;
+            border-left: 16px solid var(--_bg);
+            z-index: 1;
+        }
+
+        .pl-mode {
+            --_bg: #cba6f7;
+            background: var(--_bg);
+            color: #11111b;
+            font-weight: 700;
+            padding: 0 12px;
+            letter-spacing: 0.5px;
+        }
+
+        .pl-path {
+            --_bg: #45475a;
+            background: var(--_bg);
+            color: #cdd6f4;
+            padding-left: 24px;
+        }
+
+        .pl-user {
+            --_bg: #313244;
+            background: var(--_bg);
+            color: #a6adc8;
+            padding-left: 24px;
+        }
+
+        .bar-spacer {
+            flex: 1;
+            background: var(--bg);
+        }
+
+        /* --- Animations --- */
+        @keyframes hyprIn {
+            0% {
+                opacity: 0;
+                transform: scale(0.95) translateY(20px);
+            }
+            100% {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+            }
+        }
+
+        .container {
+            width: 100%;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 0 1rem;
+        }
+
+        .project-list {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 12px;
+            margin-bottom: 2rem;
+        }
+
+        .project-item {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            transition: all 0.3s cubic-bezier(0.05, 0.9, 0.1, 1);
+            animation: hyprIn 0.6s cubic-bezier(0.05, 0.9, 0.1, 1.1) backwards;
+            cursor: pointer;
+        }
+
+        .project-item:hover {
+            border-color: var(--mauve);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        .checkbox-container {
+            margin-right: 1.5rem;
+            display: flex;
+            align-items: center;
+        }
+
+        input[type="checkbox"] {
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border: 2px solid var(--text-dim);
+            border-radius: 4px;
+            background: transparent;
+            cursor: pointer;
+            position: relative;
+            transition: all 0.2s;
+        }
+
+        input[type="checkbox"]:checked {
+            background: var(--mauve);
+            border-color: var(--mauve);
+        }
+
+        input[type="checkbox"]:checked::after {
+            content: "✔";
+            position: absolute;
+            color: #11111b;
+            font-size: 12px;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        .project-name {
+            flex-grow: 1;
+            font-weight: 600;
+            font-size: 15px;
+            cursor: pointer;
+        }
+
+        .project-hours {
+            font-family: var(--mono);
+            color: var(--mauve);
+            font-weight: 700;
+            background: var(--accent-dim);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        button[type="submit"] {
+            position: fixed;
+            bottom: 32px;
+            right: 32px;
+            background: var(--mauve);
+            color: #11111b;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 28px;
+            font-family: var(--mono);
+            font-weight: 800;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.05, 0.9, 0.1, 1);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            z-index: 200;
+            letter-spacing: 0.5px;
+        }
+
+        button[type="submit"]:hover {
+            background: var(--pink);
+            border-color: var(--pink);
+            transform: translateY(-4px) scale(1.02);
+            box-shadow: 0 15px 40px rgba(243, 139, 168, 0.3);
+        }
+
+        button[type="submit"]:active {
+            transform: translateY(0) scale(0.98);
+        }
+
+        .no-projects {
+            grid-column: 1 / -1;
+            text-align: center;
+            padding: 60px 24px;
+            color: var(--text-dim);
+            font-size: 14px;
+            background: var(--surface);
+            border: 1px dashed var(--border);
+            border-radius: var(--radius);
+        }
+
+        @media (max-width: 640px) {
+            .pl-path { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="bar">
+        <div class="pl-seg pl-mode">RICEPHEUS</div>
+        <div class="pl-seg pl-path">~/projects/hours</div>
+        <div class="pl-seg pl-user">@{{ github_username }}</div>
+        <div class="bar-spacer"></div>
+    </div>
+
+    <div class="container">
+        <form action="/submit" method="POST">
+            <div class="project-list">
+                {% if projects and projects|length > 0 %}
+                    {% for project in projects %}
+                        <div class="project-item" style="animation-delay: {{ loop.index0 * 0.05 }}s">
+                            <div class="checkbox-container">
+                                <input type="checkbox" id="project_{{ loop.index }}" name="selected_projects" value="{{ project.name }}">
+                            </div>
+                            <label for="project_{{ loop.index }}" class="project-name">{{ project.name }}</label>
+                            <span class="project-hours">
+                                {% set hours = project.total_seconds / 3600 %}
+                                {{ hours | round(precision=1) }}h
+                            </span>
+                        </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="no-projects">No projects found.</div>
+                {% endif %}
+            </div>
+
+            <button type="submit">SUBMIT_HOURS</button>
+        </form>
+    </div>
+
+    <script>
+        // Make the whole card clickable
+        document.querySelectorAll('.project-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                if (e.target.tagName !== 'INPUT') {
+                    const cb = item.querySelector('input[type="checkbox"]');
+                    cb.checked = !cb.checked;
+                }
+            });
+        });
+    </script>
+</body>
+</html>
