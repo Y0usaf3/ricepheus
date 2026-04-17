@@ -156,7 +156,7 @@ async fn main() {
         .route("/submit", post(submit))
         .layer(axum::Extension(tera))
         .with_state(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:5555")
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:5555")
         .await
         .unwrap();
     let _ = axum::serve(listener, app).await;
