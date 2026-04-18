@@ -14,7 +14,9 @@ use axum_extra::extract::cookie::{Cookie, Key, PrivateCookieJar};
 use slack_morphism::prelude::*;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 use tera::{Context, Tera};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::RwLock;
 
 const HT_CLIENT_ID: &str = dotenv!("CLIENT_ID");
@@ -73,12 +75,37 @@ pub struct Project {
 struct AppState {
     key: Key,
     submitted_users: Arc<RwLock<HashSet<u64>>>,
+    slack_token: SlackApiToken,
 }
 
 impl FromRef<AppState> for Key {
     fn from_ref(state: &AppState) -> Self {
         state.key.clone()
     }
+}
+
+async fn send_slack_message(
+    token: &SlackApiToken,
+    channel: &str,
+    text: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let client =
+        SlackClient::new(SlackClientHyperConnector::new().expect("Failed to create Slack client"));
+
+    let session = client.open_session(token);
+    let message = SlackMessageContent {
+        text: Some(text),
+        blocks: None,
+        attachments: None,
+        upload: None,
+        files: None,
+        reactions: None,
+        metadata: None,
+    };
+
+    let post_chat_req = SlackApiChatPostMessageRequest::new(channel.into(), message);
+    session.chat_post_message(&post_chat_req).await?;
+    Ok(())
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -134,6 +161,50 @@ async fn main() {
         .expect("Failed to install rustls default crypto provider");
     tracing_subscriber::fmt::init();
 
+    let token_value: SlackApiTokenValue = SLACK_TOKEN.into();
+    let token: SlackApiToken = SlackApiToken::new(token_value);
+
+    let token_clone = token.clone();
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(tokio::io::stdin()).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            let trimmed = line.trim();
+            if !trimmed.is_empty()
+                && let Err(e) = send_slack_message(
+                    &token_clone,
+                    "#safe-place-where-you-is-removed",
+                    trimmed.to_string(),
+                )
+                .await
+            {
+                eprintln!("Error sending message from stdin: {}", e);
+            }
+        }
+    });
+
+    let token_clone = token.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Ok(content) = tokio::fs::read_to_string("msg.txt").await {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    if let Err(e) = send_slack_message(
+                        &token_clone,
+                        "#safe-place-where-you-is-removed",
+                        trimmed.to_string(),
+                    )
+                    .await
+                    {
+                        eprintln!("Error sending message from msg.txt: {}", e);
+                    } else {
+                        let _ = tokio::fs::write("msg.txt", "").await;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    });
+
     let tera = Tera::new("templates/**/*.html").expect("Failed to initialize Tera");
 
     let mut submitted_users = HashSet::new();
@@ -146,9 +217,9 @@ async fn main() {
     }
 
     let state = AppState {
-        key: Key::generate(), // we dont need to know the key lmfao, as the cookie will be stored
-        // for a brieve amount of time
+        key: Key::generate(),
         submitted_users: Arc::new(RwLock::new(submitted_users)),
+        slack_token: token,
     };
     let app = Router::new()
         .route("/", get(root))
@@ -156,9 +227,7 @@ async fn main() {
         .route("/submit", post(submit))
         .layer(axum::Extension(tera))
         .with_state(state);
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:5555")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:5555").await.unwrap();
     let _ = axum::serve(listener, app).await;
 }
 
@@ -238,22 +307,50 @@ async fn submit(
         .filter(|p| selected_project_names.contains(&p.name))
         .collect();
 
+    let mut full_hours: u64 = 0;
+    let mut full_minutes: u64 = 0;
+
     let project_details: Vec<String> = selected_projects
         .iter()
         .map(|p| {
             let hours = p.total_seconds / 3600;
             let minutes = (p.total_seconds % 3600) / 60;
-            format!(
-                "*{}* ({}h{}m) [{}s]",
-                p.name, hours, minutes, p.total_seconds
-            )
+            full_hours += hours;
+            full_minutes += minutes;
+            full_hours += full_minutes / 60;
+            full_minutes %= 60;
+
+            let name_lower = p.name.to_lowercase();
+            let custom_msg = if name_lower.contains("nix") || name_lower.contains("nixos") {
+                "woah nix :parrot-nix: !"
+            } else if name_lower.contains("arch") {
+                "nice config btw! :femboy-arch: "
+            } else if name_lower.contains("sans") {
+                "WAIT! is that sand :sans: "
+            } else {
+                ""
+            };
+
+            format!("→ *{}* ({}h {}m) {custom_msg}", p.name, hours, minutes)
         })
         .collect();
 
+    let extra_msg = if full_hours > 67 {
+        "\nWOW! great job!!! thats a lot of socks /silly"
+    } else {
+        "\nnice work!"
+    };
+
+    let total_h = if selected_projects.len() == 1 {
+        format!("a total of {full_hours}h{full_minutes}m!")
+    } else {
+        "".to_string()
+    };
+
     let message_text = format!(
-        "User :github: *{}* submitted WWWWW projects: {} :boykisser-dance:",
-        user.github_username,
-        project_details.join(", ")
+        "<@{}> submitted their rice! :boykisser-dance:\n{}\n{total_h} {extra_msg}",
+        user.slack_id,
+        project_details.join("\n"),
     );
 
     let client = SlackClient::new(
@@ -275,10 +372,8 @@ async fn submit(
         metadata: None,
     };
 
-    let post_chat_req = SlackApiChatPostMessageRequest::new(
-        "#riceathons-very-private-discussion-bc-idk-what-name-i-should-choose-pfff".into(),
-        message,
-    );
+    let post_chat_req =
+        SlackApiChatPostMessageRequest::new("#safe-place-where-you-is-removed".into(), message);
 
     session
         .chat_post_message(&post_chat_req)
