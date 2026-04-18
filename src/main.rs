@@ -168,12 +168,8 @@ async fn main() {
         while let Ok(Some(line)) = reader.next_line().await {
             let trimmed = line.trim();
             if !trimmed.is_empty()
-                && let Err(e) = send_slack_message(
-                    &token_clone,
-                    "#safe-place-where-you-is-removed",
-                    trimmed.to_string(),
-                )
-                .await
+                && let Err(e) =
+                    send_slack_message(&token_clone, "#riceathon", trimmed.to_string()).await
             {
                 eprintln!("Error sending message from stdin: {}", e);
             }
@@ -186,12 +182,8 @@ async fn main() {
             if let Ok(content) = tokio::fs::read_to_string("msg.txt").await {
                 let trimmed = content.trim();
                 if !trimmed.is_empty() {
-                    if let Err(e) = send_slack_message(
-                        &token_clone,
-                        "#safe-place-where-you-is-removed",
-                        trimmed.to_string(),
-                    )
-                    .await
+                    if let Err(e) =
+                        send_slack_message(&token_clone, "#riceathon", trimmed.to_string()).await
                     {
                         eprintln!("Error sending message from msg.txt: {}", e);
                     } else {
@@ -370,8 +362,7 @@ async fn submit(
         metadata: None,
     };
 
-    let post_chat_req =
-        SlackApiChatPostMessageRequest::new("#safe-place-where-you-is-removed".into(), message);
+    let post_chat_req = SlackApiChatPostMessageRequest::new("#riceathon".into(), message);
 
     session
         .chat_post_message(&post_chat_req)
