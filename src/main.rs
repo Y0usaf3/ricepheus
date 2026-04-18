@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate dotenv_codegen;
-
 use axum::extract::{FromRef, State};
 use axum::response::Html;
 use axum::{
@@ -13,23 +10,24 @@ use axum_extra::extract::cookie::SameSite;
 use axum_extra::extract::cookie::{Cookie, Key, PrivateCookieJar};
 use slack_morphism::prelude::*;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tera::{Context, Tera};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::RwLock;
 
-const HT_CLIENT_ID: &str = dotenv!("CLIENT_ID");
-const HT_CLIENT_SECRET: &str = dotenv!("CLIENT_SECRET");
-const HT_REDIRECT_URI: &str = dotenv!("REDIRECT_URI");
-const SLACK_TOKEN: &str = dotenv!("SLACK_TOKEN");
+const HT_CLIENT_ID: LazyLock<String> = LazyLock::new(|| std::env::var("CLIENT_ID").unwrap());
+const HT_CLIENT_SECRET: LazyLock<String> =
+    LazyLock::new(|| std::env::var("CLIENT_SECRET").unwrap());
+const HT_REDIRECT_URI: LazyLock<String> = LazyLock::new(|| std::env::var("REDIRECT_URI").unwrap());
+const SLACK_TOKEN: LazyLock<String> = LazyLock::new(|| std::env::var("SLACK_TOKEN").unwrap());
 
 #[derive(serde::Serialize, Debug)]
 struct CodeExchange<'a> {
-    client_id: &'a str,
-    client_secret: &'a str,
+    client_id: String,
+    client_secret: String,
     code: String,
-    redirect_uri: &'a str,
+    redirect_uri: String,
     grant_type: &'a str,
 }
 
@@ -161,7 +159,7 @@ async fn main() {
         .expect("Failed to install rustls default crypto provider");
     tracing_subscriber::fmt::init();
 
-    let token_value: SlackApiTokenValue = SLACK_TOKEN.into();
+    let token_value: SlackApiTokenValue = SLACK_TOKEN.as_str().into();
     let token: SlackApiToken = SlackApiToken::new(token_value);
 
     let token_clone = token.clone();
@@ -358,7 +356,7 @@ async fn submit(
             .ok()
             .ok_or(Redirect::to("/err"))?,
     );
-    let token_value: SlackApiTokenValue = SLACK_TOKEN.into();
+    let token_value: SlackApiTokenValue = SLACK_TOKEN.as_str().into();
     let token: SlackApiToken = SlackApiToken::new(token_value);
     let session = client.open_session(&token);
 
@@ -430,10 +428,10 @@ async fn root(
             let client = reqwest::Client::new();
 
             let exchange_request = CodeExchange {
-                client_id: HT_CLIENT_ID,
-                client_secret: HT_CLIENT_SECRET,
+                client_id: HT_CLIENT_ID.to_string(),
+                client_secret: HT_CLIENT_SECRET.to_string(),
                 code,
-                redirect_uri: HT_REDIRECT_URI,
+                redirect_uri: HT_REDIRECT_URI.to_string(),
                 grant_type: "authorization_code",
             };
 
@@ -496,7 +494,8 @@ async fn root(
         }
         _ => Err(Redirect::to(&format!(
             "https://hackatime.hackclub.com/oauth/authorize?client_id={}&redirect_uri={}&response_type=code&scope=profile+read",
-            HT_CLIENT_ID, HT_REDIRECT_URI
+            HT_CLIENT_ID.as_str(),
+            HT_REDIRECT_URI.as_str()
         ))),
     }
 }
