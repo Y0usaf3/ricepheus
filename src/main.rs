@@ -331,7 +331,7 @@ async fn submit(
         "\nnice work!"
     };
 
-    let total_h = if selected_projects.len() == 1 {
+    let total_h = if selected_projects.len() != 1 {
         format!("a total of {full_hours}h{full_minutes}m!")
     } else {
         "".to_string()
