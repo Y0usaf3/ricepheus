@@ -22,7 +22,7 @@ const HT_CLIENT_SECRET: LazyLock<String> =
 const HT_REDIRECT_URI: LazyLock<String> = LazyLock::new(|| std::env::var("REDIRECT_URI").unwrap());
 const SLACK_TOKEN: LazyLock<String> = LazyLock::new(|| std::env::var("SLACK_TOKEN").unwrap());
 const START_DATE: LazyLock<String> = LazyLock::new(|| {
-    std::env::var("START_DATE").unwrap_or_else(|_| "2026-02-16T00:00:00Z".to_string())
+    std::env::var("START_DATE").unwrap_or_else(|_| "2025-12-22T00:00:00Z".to_string())
 });
 
 #[derive(serde::Serialize, Debug)]
@@ -286,6 +286,7 @@ async fn submit(
 
     let projects_response = client
         .get("https://hackatime.hackclub.com/api/v1/authenticated/projects")
+        .query(&[("start", START_DATE.as_str())])
         .bearer_auth(&token)
         .send()
         .await
