@@ -522,6 +522,7 @@ async fn handle_add_me(
     State(state): State<AppState>,
     axum::Form(event): axum::Form<SlackCommandEvent>,
 ) -> Json<SlackCommandEventResponse> {
+    println!("handling add me");
     // Access command details like event.user_id, event.channel_id, or event.text
     let response_text = format!("Processing `/add_me` for user <@{}>!", event.user_id);
 
