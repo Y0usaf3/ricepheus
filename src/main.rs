@@ -1,3 +1,4 @@
+use axum::Json;
 use axum::extract::{FromRef, State};
 use axum::response::Html;
 use axum::{
@@ -218,9 +219,15 @@ async fn main() {
         .route("/", get(root))
         .route("/err", get(err))
         .route("/submit", post(submit))
+        // bot slash cmds
+        .route("/add_me", post(handle_add_me))
+        .route("/start", post(handle_start))
+        .route("/stop", post(handle_stop))
+        .route("/current", post(handle_current))
+        .route("/next", post(handle_next))
         .layer(axum::Extension(tera))
         .with_state(state);
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:5555").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
     let _ = axum::serve(listener, app).await;
 }
 
@@ -509,4 +516,55 @@ async fn err() -> &'static str {
 　＼二つ
 
 "#
+}
+
+async fn handle_add_me(
+    State(state): State<AppState>,
+    axum::Form(event): axum::Form<SlackCommandEvent>,
+) -> Json<SlackCommandEventResponse> {
+    // Access command details like event.user_id, event.channel_id, or event.text
+    let response_text = format!("Processing `/add_me` for user <@{}>!", event.user_id);
+
+    let content = SlackMessageContent::new().with_text(response_text.into());
+    Json(SlackCommandEventResponse::new(content))
+}
+
+async fn handle_start(
+    State(state): State<AppState>,
+    axum::Form(event): axum::Form<SlackCommandEvent>,
+) -> Json<SlackCommandEventResponse> {
+    let response_text = format!("Timer started by <@{}>!", event.user_id);
+
+    let content = SlackMessageContent::new().with_text(response_text.into());
+    Json(SlackCommandEventResponse::new(content))
+}
+
+async fn handle_stop(
+    State(state): State<AppState>,
+    axum::Form(event): axum::Form<SlackCommandEvent>,
+) -> Json<SlackCommandEventResponse> {
+    let response_text = format!("Timer stopped by <@{}>!", event.user_id);
+
+    let content = SlackMessageContent::new().with_text(response_text.into());
+    Json(SlackCommandEventResponse::new(content))
+}
+
+async fn handle_current(
+    State(state): State<AppState>,
+    axum::Form(event): axum::Form<SlackCommandEvent>,
+) -> Json<SlackCommandEventResponse> {
+    let response_text = "Here is your current status!".to_string();
+
+    let content = SlackMessageContent::new().with_text(response_text.into());
+    Json(SlackCommandEventResponse::new(content))
+}
+
+async fn handle_next(
+    State(state): State<AppState>,
+    axum::Form(event): axum::Form<SlackCommandEvent>,
+) -> Json<SlackCommandEventResponse> {
+    let response_text = "Moving on to the next item!".to_string();
+
+    let content = SlackMessageContent::new().with_text(response_text.into());
+    Json(SlackCommandEventResponse::new(content))
 }
