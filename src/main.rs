@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::extract::{FromRef, State};
 use axum::response::Html;
+use axum::response::IntoResponse;
 use axum::{
     Extension, Router,
     response::Redirect,
@@ -9,22 +10,41 @@ use axum::{
 use axum_extra::extract::OptionalQuery;
 use axum_extra::extract::cookie::SameSite;
 use axum_extra::extract::cookie::{Cookie, Key, PrivateCookieJar};
+use reqwest::StatusCode;
 use slack_morphism::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::env;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tera::{Context, Tera};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::RwLock;
 
-const HT_CLIENT_ID: LazyLock<String> = LazyLock::new(|| std::env::var("CLIENT_ID").unwrap());
-const HT_CLIENT_SECRET: LazyLock<String> =
-    LazyLock::new(|| std::env::var("CLIENT_SECRET").unwrap());
-const HT_REDIRECT_URI: LazyLock<String> = LazyLock::new(|| std::env::var("REDIRECT_URI").unwrap());
-const SLACK_TOKEN: LazyLock<String> = LazyLock::new(|| std::env::var("SLACK_TOKEN").unwrap());
-const START_DATE: LazyLock<String> = LazyLock::new(|| {
-    std::env::var("START_DATE").unwrap_or_else(|_| "2025-12-22T00:00:00Z".to_string())
-});
+const HT_CLIENT_ID: LazyLock<String> = LazyLock::new(|| env::var("CLIENT_ID").unwrap());
+const HT_CLIENT_SECRET: LazyLock<String> = LazyLock::new(|| env::var("CLIENT_SECRET").unwrap());
+const HT_REDIRECT_URI: LazyLock<String> = LazyLock::new(|| env::var("REDIRECT_URI").unwrap());
+const SLACK_TOKEN: LazyLock<String> = LazyLock::new(|| env::var("SLACK_TOKEN").unwrap());
+const START_DATE: LazyLock<String> =
+    LazyLock::new(|| env::var("START_DATE").unwrap_or_else(|_| "2025-12-22T00:00:00Z".to_string()));
+const OWNER: LazyLock<String> = LazyLock::new(|| env::var("OWNER").expect("OWNER env var not set"));
+
+#[derive(Debug, Default, Clone)]
+struct VotingSession {
+    is_active: bool,
+    participants: HashSet<String>,
+    waiting_pool: Vec<String>,
+    current_candidate: Option<String>,
+    votes: HashMap<String, usize>,
+    voted_users: HashSet<String>,
+}
+
+#[derive(Clone)]
+struct AppState {
+    key: Key,
+    submitted_users: Arc<RwLock<HashSet<u64>>>,
+    slack_token: SlackApiToken,
+    voting_session: Arc<RwLock<VotingSession>>,
+}
 
 #[derive(serde::Serialize, Debug)]
 struct CodeExchange<'a> {
@@ -73,13 +93,6 @@ pub struct Project {
     pub archived: bool,
 }
 
-#[derive(Clone)]
-struct AppState {
-    key: Key,
-    submitted_users: Arc<RwLock<HashSet<u64>>>,
-    slack_token: SlackApiToken,
-}
-
 impl FromRef<AppState> for Key {
     fn from_ref(state: &AppState) -> Self {
         state.key.clone()
@@ -108,6 +121,34 @@ async fn send_slack_message(
     let post_chat_req = SlackApiChatPostMessageRequest::new(channel.into(), message);
     session.chat_post_message(&post_chat_req).await?;
     Ok(())
+}
+
+async fn post_to_master_thread(token: SlackApiToken, channel_id: SlackChannelId, text: String) {
+    let target_thread_ts = env::var("TARGET_THREAD_TS").unwrap_or_default();
+    let client = SlackClient::new(SlackClientHyperConnector::new().unwrap());
+    let session = client.open_session(&token);
+    let msg = SlackMessageContent::new().with_text(text);
+    let mut req = SlackApiChatPostMessageRequest::new(channel_id, msg);
+    if !target_thread_ts.is_empty() {
+        req = req.with_thread_ts(target_thread_ts.into());
+    }
+    let _ = session.chat_post_message(&req).await;
+}
+
+fn parse_slack_mention(text: &str) -> Option<String> {
+    dbg!(text);
+    let text = text.trim();
+    if text.starts_with("<@") && text.contains('>') {
+        let end_idx = text.find('>').unwrap();
+        let internal = &text[2..end_idx];
+        if let Some(pipe_idx) = internal.find('|') {
+            Some(internal[..pipe_idx].to_string())
+        } else {
+            Some(internal.to_string())
+        }
+    } else {
+        None
+    }
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -214,6 +255,7 @@ async fn main() {
         key: Key::generate(),
         submitted_users: Arc::new(RwLock::new(submitted_users)),
         slack_token: token,
+        voting_session: Arc::new(RwLock::new(VotingSession::default())),
     };
     let app = Router::new()
         .route("/", get(root))
@@ -225,6 +267,7 @@ async fn main() {
         .route("/stop", post(handle_stop))
         .route("/current", post(handle_current))
         .route("/next", post(handle_next))
+        .route("/vote", post(handle_vote))
         .layer(axum::Extension(tera))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
@@ -518,54 +561,307 @@ async fn err() -> &'static str {
 "#
 }
 
-async fn handle_add_me(
-    State(state): State<AppState>,
-    axum::Form(event): axum::Form<SlackCommandEvent>,
-) -> Json<SlackCommandEventResponse> {
-    println!("handling add me");
-    // Access command details like event.user_id, event.channel_id, or event.text
-    let response_text = format!("Processing `/add_me` for user <@{}>!", event.user_id);
-
-    let content = SlackMessageContent::new().with_text(response_text.into());
-    Json(SlackCommandEventResponse::new(content))
-}
-
 async fn handle_start(
     State(state): State<AppState>,
     axum::Form(event): axum::Form<SlackCommandEvent>,
-) -> Json<SlackCommandEventResponse> {
-    let response_text = format!("Timer started by <@{}>!", event.user_id);
+) -> Result<StatusCode, Json<SlackCommandEventResponse>> {
+    if event.user_id.to_string() != *OWNER {
+        let err_content = SlackMessageContent::new()
+            .with_text("ONLY YOUSAFE CAN START THE VOTING HUDDLE \nYOU NOT SAFE /silly".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(err_content)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
 
-    let content = SlackMessageContent::new().with_text(response_text.into());
-    Json(SlackCommandEventResponse::new(content))
+    let mut session = state.voting_session.write().await;
+
+    *session = VotingSession {
+        is_active: true,
+        ..Default::default()
+    };
+
+    let slack_token = state.slack_token.clone();
+    let channel_id = event.channel_id.clone();
+
+    tokio::spawn(async move {
+        let msg = format!(
+            ":yay: ayy, just started it, now ppl shall add themselves using `/add_me` so they can participate >:3\nyumm i wonder the rices im going to eat /silly",
+        );
+        post_to_master_thread(slack_token, channel_id, msg).await;
+    });
+
+    Ok(StatusCode::OK)
 }
 
-async fn handle_stop(
+async fn handle_add_me(
     State(state): State<AppState>,
     axum::Form(event): axum::Form<SlackCommandEvent>,
-) -> Json<SlackCommandEventResponse> {
-    let response_text = format!("Timer stopped by <@{}>!", event.user_id);
+) -> Result<StatusCode, Json<SlackCommandEventResponse>> {
+    let mut session = state.voting_session.write().await;
 
-    let content = SlackMessageContent::new().with_text(response_text.into());
-    Json(SlackCommandEventResponse::new(content))
-}
+    if !session.is_active {
+        let err_content = SlackMessageContent::new().with_text("Nuh uh".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(err_content)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
 
-async fn handle_current(
-    State(state): State<AppState>,
-    axum::Form(event): axum::Form<SlackCommandEvent>,
-) -> Json<SlackCommandEventResponse> {
-    let response_text = "Here is your current status!".to_string();
+    let caller_id = event.user_id.to_string();
+    if session.participants.contains(&caller_id) {
+        let err_content =
+            SlackMessageContent::new().with_text("Your already in the list silly!".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(err_content)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
 
-    let content = SlackMessageContent::new().with_text(response_text.into());
-    Json(SlackCommandEventResponse::new(content))
+    session.participants.insert(caller_id.clone());
+    session.waiting_pool.push(caller_id.clone());
+
+    let slack_token = state.slack_token.clone();
+    let channel_id = event.channel_id.clone();
+    let total_count = session.participants.len();
+
+    tokio::spawn(async move {
+        let msg = format!(
+            ":wavey: <@{caller_id}> joined the voting participant pool! now there is *{total_count}* participants in the list"
+        );
+        post_to_master_thread(slack_token, channel_id, msg).await;
+    });
+
+    Ok(StatusCode::OK)
 }
 
 async fn handle_next(
     State(state): State<AppState>,
     axum::Form(event): axum::Form<SlackCommandEvent>,
-) -> Json<SlackCommandEventResponse> {
-    let response_text = "Moving on to the next item!".to_string();
+) -> Result<StatusCode, Json<SlackCommandEventResponse>> {
+    if event.user_id.to_string() != *OWNER {
+        let err_content =
+            SlackMessageContent::new().with_text("Nuh uh, only the YOUSAFE can use this".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(err_content)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
 
-    let content = SlackMessageContent::new().with_text(response_text.into());
-    Json(SlackCommandEventResponse::new(content))
+    let mut session = state.voting_session.write().await;
+    if !session.is_active {
+        let err_content = SlackMessageContent::new().with_text("Nuh uh".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(err_content)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
+
+    if session.waiting_pool.is_empty() {
+        let slack_token = state.slack_token.clone();
+        let channel_id = event.channel_id.clone();
+        tokio::spawn(async move {
+            post_to_master_thread(
+                slack_token,
+                channel_id,
+                "No more participants in the list! u can run `/stop` to show the results".into(),
+            )
+            .await;
+        });
+        let ack = SlackMessageContent::new()
+            .with_text("The participant pool is empty. :pensive-wobble:".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(ack)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
+
+    // Fixed the potential rand compilation error using random_range
+    let random_idx = rand::random_range(..session.waiting_pool.len());
+    let chosen_one = session.waiting_pool.remove(random_idx);
+
+    session.current_candidate = Some(chosen_one.clone());
+
+    let slack_token = state.slack_token.clone();
+    let channel_id = event.channel_id.clone();
+
+    tokio::spawn(async move {
+        let msg = format!("Now time for <@{chosen_one}> to show us their rice :yay: !");
+        post_to_master_thread(slack_token, channel_id, msg).await;
+    });
+
+    Ok(StatusCode::OK)
+}
+
+async fn handle_vote(
+    State(state): State<AppState>,
+    axum::Form(event): axum::Form<SlackCommandEvent>,
+) -> Result<StatusCode, Json<SlackCommandEventResponse>> {
+    dbg!(&event);
+    let mut session = state.voting_session.write().await;
+    if !session.is_active {
+        let err_content = SlackMessageContent::new().with_text("Nuh uh".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(err_content)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
+
+    let voter_id = event.user_id.to_string();
+
+    let target_text = event.text.clone().unwrap_or_default();
+    let target_id = match parse_slack_mention(&target_text) {
+        Some(id) => id,
+        None => {
+            let err_content = SlackMessageContent::new()
+                .with_text("format error ? please vote that way `/vote @user`".into());
+            return Err(Json(
+                SlackCommandEventResponse::new(err_content)
+                    .with_response_type(SlackMessageResponseType::Ephemeral),
+            ));
+        }
+    };
+
+    if voter_id == target_id {
+        let err_content = SlackMessageContent::new()
+            .with_text("pfffff lmao what, what r u trying todo? u silly".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(err_content)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
+
+    if session.voted_users.contains(&voter_id) {
+        let err_content =
+            SlackMessageContent::new().with_text("You can only vote for one person".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(err_content)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
+
+    if !session.participants.contains(&target_id) {
+        let err_content =
+            SlackMessageContent::new().with_text("Huh ? the user is not in the list ??".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(err_content)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
+
+    session.voted_users.insert(voter_id.clone());
+    *session.votes.entry(target_id.clone()).or_insert(0) += 1;
+
+    let slack_token = state.slack_token.clone();
+    let channel_id = event.channel_id.clone();
+
+    tokio::spawn(async move {
+        let log_msg = format!("looks like this rice impressed you! +1 point for them :happi:");
+        post_to_master_thread(slack_token, channel_id, log_msg).await;
+    });
+
+    Ok(StatusCode::OK)
+}
+
+async fn handle_current(
+    State(state): State<AppState>,
+    axum::Form(event): axum::Form<SlackCommandEvent>,
+) -> Result<StatusCode, Json<SlackCommandEventResponse>> {
+    let session = state.voting_session.read().await;
+    if !session.is_active {
+        let err_content = SlackMessageContent::new().with_text("umm, nop".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(err_content)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
+
+    let slack_token = state.slack_token.clone();
+    let channel_id = event.channel_id.clone();
+    let response_text = match &session.current_candidate {
+        Some(candidate) => format!("right now, <@{candidate}> is showing us their rice :3"),
+        None => "no one showing their rice ?? YOUSAFE must call `/next` to choose a participant"
+            .to_string(),
+    };
+
+    tokio::spawn(async move {
+        post_to_master_thread(slack_token, channel_id, response_text).await;
+    });
+
+    Ok(StatusCode::OK)
+}
+
+async fn handle_stop(
+    State(state): State<AppState>,
+    axum::Form(event): axum::Form<SlackCommandEvent>,
+) -> Result<StatusCode, Json<SlackCommandEventResponse>> {
+    if event.user_id.to_string() != *OWNER {
+        let err_content = SlackMessageContent::new().with_text("only YOUSAFE can stop this".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(err_content)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
+
+    let mut session = state.voting_session.write().await;
+    if !session.is_active {
+        let err_content = SlackMessageContent::new().with_text("Nuh uh".into());
+        return Err(Json(
+            SlackCommandEventResponse::new(err_content)
+                .with_response_type(SlackMessageResponseType::Ephemeral),
+        ));
+    }
+
+    let mut leaderboard_text =
+        String::from("*:ultrafastparrot: final voting Leaderboard scores !* \n");
+    let mut highest_votes = 0;
+    let mut winners = Vec::new();
+
+    if session.participants.is_empty() {
+        leaderboard_text.push_str("_No registered participants joined this round._");
+    } else {
+        for user in &session.participants {
+            let score = session.votes.get(user).cloned().unwrap_or(0);
+            let upvote = if score > 9 {
+                ":super-mega-upvote:"
+            } else {
+                ":upvote:"
+            };
+            leaderboard_text.push_str(&format!("- <@{user}>: *{score}*{upvote} votes\n"));
+
+            if score > highest_votes {
+                highest_votes = score;
+                winners = vec![user.clone()];
+            } else if score == highest_votes && score > 0 {
+                winners.push(user.clone());
+            }
+        }
+    }
+
+    let final_announcement = if highest_votes == 0 {
+        format!("{leaderboard_text}\nWAIT WHAT, NO WINNER WTH?!? there must be a mistake..")
+    } else if winners.len() == 1 {
+        format!(
+            "{leaderboard_text}\n* ANNNNnnndddd congratulations to our winner <@{}> with {} votes!* :yay:",
+            winners[0], highest_votes
+        )
+    } else {
+        let ties: Vec<String> = winners.iter().map(|w| format!("<@{w}>")).collect();
+        format!(
+            "{leaderboard_text}\nHow is that possible, {} got *{} votes!*\nYOUSAFE i let you say the rest :p",
+            ties.join(", "),
+            highest_votes
+        )
+    };
+
+    session.is_active = false;
+
+    let slack_token = state.slack_token.clone();
+    let channel_id = event.channel_id.clone();
+
+    tokio::spawn(async move {
+        post_to_master_thread(slack_token, channel_id, final_announcement).await;
+    });
+
+    Ok(StatusCode::OK)
 }

@@ -9,10 +9,13 @@
     self,
     nixpkgs,
   }: let
-    pkgs = nixpkgs.legacyPackages."x86_64-linux";
+    pkgs = import nixpkgs {
+      system = "x86_64-linux";
+      config.allowUnfree = true;
+    };
   in {
     devShells."x86_64-linux".default = pkgs.mkShell {
-      buildInputs = with pkgs; [cargo rustc];
+      buildInputs = with pkgs; [cargo rustc ngrok];
     };
   };
 }
