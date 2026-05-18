@@ -15,7 +15,7 @@
     };
   in {
     devShells."x86_64-linux".default = pkgs.mkShell {
-      buildInputs = with pkgs; [cargo rustc ngrok];
+      buildInputs = with pkgs; [cargo rustc ngrok rust-analyzer];
     };
   };
 }
