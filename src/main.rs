@@ -269,7 +269,7 @@ async fn main() {
         .route("/vote", post(handle_vote))
         .layer(axum::Extension(tera))
         .with_state(state);
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:5555").await.unwrap();
     let _ = axum::serve(listener, app).await;
 }
 
